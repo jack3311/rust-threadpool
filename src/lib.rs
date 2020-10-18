@@ -86,6 +86,11 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
+pub static mut worker_begin: Option<Box<dyn Fn() + Send + 'static>> = None;
+pub static mut worker_end: Option<Box<dyn Fn() + Send + 'static>> = None;
+pub static mut worker_found_work: Option<Box<dyn Fn() + Send + 'static>> = None;
+pub static mut worker_finished_work: Option<Box<dyn Fn() + Send + 'static>> = None;
+
 trait FnBox {
     fn call_box(self: Box<Self>);
 }
@@ -737,6 +742,17 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
     }
     builder
         .spawn(move || {
+            unsafe {
+                if let Some(worker_begin_func) = &worker_begin {
+                    worker_begin_func();
+                }
+            }
+            unsafe {
+                if let Some(worker_finished_work_func) = &worker_finished_work {
+                    worker_finished_work_func();
+                }
+            }
+
             // Will spawn a new thread on panic unless it is cancelled.
             let sentinel = Sentinel::new(&shared_data);
 
@@ -766,13 +782,34 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
                 shared_data.active_count.fetch_add(1, Ordering::SeqCst);
                 shared_data.queued_count.fetch_sub(1, Ordering::SeqCst);
 
+                unsafe {
+                    if let Some(worker_found_work_func) = &worker_found_work {
+                        worker_found_work_func();
+                    }
+                }
                 job.call_box();
+                unsafe {
+                    if let Some(worker_finished_work_func) = &worker_finished_work {
+                        worker_finished_work_func();
+                    }
+                }
 
                 shared_data.active_count.fetch_sub(1, Ordering::SeqCst);
                 shared_data.no_work_notify_all();
             }
 
             sentinel.cancel();
+            
+            unsafe {
+                if let Some(worker_found_work_func) = &worker_found_work {
+                    worker_found_work_func();
+                }
+            }
+            unsafe {
+                if let Some(worker_end_func) = &worker_end {
+                    worker_end_func();
+                }
+            }
         })
         .unwrap();
 }
